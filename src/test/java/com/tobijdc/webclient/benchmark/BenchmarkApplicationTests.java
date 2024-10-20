@@ -20,11 +20,16 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.infra.Blackhole;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.json.Jackson2JsonDecoder;
+import org.springframework.http.codec.json.Jackson2JsonEncoder;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.module.blackbird.BlackbirdModule;
 
 @SpringBootTest
 @State(Scope.Benchmark)
@@ -37,16 +42,29 @@ public class BenchmarkApplicationTests extends AbstractBenchmark {
     private ObjectMapper objectMapper;
     private Map<String, Object> map;
     private RandomGenerator rand;
+    private ExchangeStrategies strategies;
 
-    @Param({"10", "100", "1000", "10000", "50000"})
+    @Param({"10", "100", "1000", "10000",})
     public int mapSize;
+    @Param({"false", "true"})
+    public boolean blackbird;
 
 	@Setup(Level.Trial)
     public void setupBenchmark() {
         objectMapper = new ObjectMapper();
+        if (blackbird) {
+            objectMapper.registerModule(new BlackbirdModule());
+        }
         map = HashMap.newHashMap(3*mapSize);
         rand = RandomGeneratorFactory.of("Xoroshiro128PlusPlus").create(1234567890);
         generateBigMap();
+        strategies = ExchangeStrategies
+            .builder()
+            .codecs(clientDefaultCodecsConfigurer -> {
+                clientDefaultCodecsConfigurer.defaultCodecs().jackson2JsonEncoder(new Jackson2JsonEncoder(objectMapper, MediaType.APPLICATION_JSON));
+                clientDefaultCodecsConfigurer.defaultCodecs().jackson2JsonDecoder(new Jackson2JsonDecoder(objectMapper, MediaType.APPLICATION_JSON));
+
+            }).build();
     }
 
     private void generateBigMap() {
@@ -59,7 +77,9 @@ public class BenchmarkApplicationTests extends AbstractBenchmark {
 
 	@Benchmark
 	public void createStringFirst(Blackhole blackhole) throws JsonProcessingException {
-		String response = WebClient.create("http://localhost:80").method(HttpMethod.POST)
+		String response = WebClient.builder().exchangeStrategies(strategies).baseUrl("http://localhost:80").build()
+            .method(HttpMethod.POST)
+            .contentType(MediaType.APPLICATION_JSON)
 		    .bodyValue(objectMapper.writeValueAsString(map))
             .retrieve()
             .bodyToMono(String.class)
@@ -71,7 +91,9 @@ public class BenchmarkApplicationTests extends AbstractBenchmark {
 
     @Benchmark
 	public void useObject(Blackhole blackhole) {
-		String response = WebClient.create("http://localhost:80").method(HttpMethod.POST)
+		String response = WebClient.builder().exchangeStrategies(strategies).baseUrl("http://localhost:80").build()
+            .method(HttpMethod.POST)
+            .contentType(MediaType.APPLICATION_JSON)
 		    .bodyValue(map)
             .retrieve()
             .bodyToMono(String.class)
